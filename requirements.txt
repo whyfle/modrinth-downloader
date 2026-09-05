@@ -1,0 +1,8 @@
+# No strict dependencies — stdlib only
+# Optional enhancements (uncomment if desired):
+# requests>=2.28.0  # alternative HTTP client (not required, urllib is used)
+# aiohttp>=3.8.0    # for async GUI downloads (not required)
+
+# For development / testing:
+pytest>=7.0
+pytest-cov>=4.0
