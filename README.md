@@ -110,6 +110,30 @@ python modpacker.py https://modrinth.com/modpack/foo \
   --minecraft-dir /tmp/test-mc --game-dir /tmp/test-mc/profiles/foo --dry-run
 ```
 
+### System dependencies (Java, Tkinter, launcher) via Vista
+
+```bash
+# Check what's missing
+python modpacker.py --check-deps
+
+# Install missing deps with the Vista package manager (preferred when available)
+python modpacker.py --install-deps --pm vista --dry-run   # preview
+python modpacker.py --install-deps --pm vista --yes        # Java + PrismLauncher via vista
+
+# Or let modpacker pick: vista first, then dnf/apt/pacman/zypper/apk
+python modpacker.py --install-deps --dry-run
+
+# Only specific deps, or a different manager
+python modpacker.py --install-deps --deps java,launcher --pm flatpak --dry-run
+```
+
+Via Vista this runs `vista install adoptium@temurin21-binaries` for Java and
+`vista install org.prismlauncher.PrismLauncher --default flathub` for the launcher
+(PrismLauncher from Flathub; Tkinter always uses the native manager:
+`python3-tkinter` / `python3-tk` / `tk`). Vista itself:
+`sudo dnf copr enable whyfle/vista && sudo dnf install vista`
+— see https://github.com/whyfle/vista.
+
 ---
 
 ## 🔧 How It Works

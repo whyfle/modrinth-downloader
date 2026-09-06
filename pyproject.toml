@@ -1,6 +1,6 @@
 [project]
 name = "modrinth-downloader"
-version = "1.0.0"
+version = "1.1.0"
 description = "Modrinth Downloader - Bridge Modrinth modpacks (.mrpack) into the official Minecraft Launcher"
 readme = "README.md"
 requires-python = ">=3.8"

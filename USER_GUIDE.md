@@ -16,6 +16,19 @@
 5. In the launcher, select installation named after the pack (e.g. *Fabulously Optimized*). First launch may download additional loader libs — keep internet on.
 6. **Play**.
 
+## Prerequisites (Java, Tkinter, launcher)
+
+```bash
+python modpacker.py --check-deps
+python modpacker.py --install-deps --pm vista --yes   # needs https://github.com/whyfle/vista
+python modpacker.py --install-deps --dry-run          # auto: vista, else dnf/apt/pacman
+```
+
+This installs Java 21 (`adoptium@temurin21-binaries` via Vista) and PrismLauncher
+(`--default flathub` via Vista, i.e. Flathub's `org.prismlauncher.PrismLauncher`).
+Tkinter (`--gui`) always comes from the native manager
+(`python3-tkinter` / `python3-tk` / `tk`).
+
 ## GUI Tour
 
 - **URL field** — paste any `modrinth.com/modpack/...` URL (project or `/version/<id>`). Direct `.mrpack` URLs also work.

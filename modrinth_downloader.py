@@ -44,6 +44,7 @@ import platform
 import re
 import shutil
 import ssl
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -65,7 +66,7 @@ import queue
 # ──────────────────────────────────────────────────────────────────────────────
 
 APP_NAME = "Modrinth Downloader"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 MODRINTH_API = "https://api.modrinth.com/v2"
 MODRINTH_API_STAGING = "https://staging-api.modrinth.com/v2"
 USER_AGENT = f"Modpacker/{APP_VERSION} (github.com/anomalyco/opencode)"
@@ -1102,6 +1103,241 @@ def get_loader_installer(loader_type: str, mc_dir: Path) -> LoaderInstaller:
     raise ModpackerError(f"Unsupported loader: {loader_type}. Supported: fabric-loader, forge, neoforge, quilt-loader")
 
 # ──────────────────────────────────────────────────────────────────────────────
+# System Dependencies (Vista / native package managers)
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# `--check-deps` reports whether Java, Tkinter and a Minecraft launcher exist.
+# `--install-deps [--pm vista|dnf|apt|pacman|zypper|apk|flatpak|auto]` installs
+# whatever is missing. `--pm vista` shells out to the Vista universal package
+# manager (https://github.com/whyfle/vista), e.g.:
+#   vista install adoptium@temurin21-binaries -y
+#   vista install org.prismlauncher.PrismLauncher --default flathub -y
+
+SYSTEM_PACKAGE_MANAGERS = ("vista", "dnf", "apt", "pacman", "zypper", "apk", "flatpak")
+
+# Binaries probed per manager (first hit wins for detection).
+_PM_BINARIES = {
+    "vista": ("vista",),
+    "dnf": ("dnf", "dnf5"),
+    "apt": ("apt", "apt-get"),
+    "pacman": ("pacman",),
+    "zypper": ("zypper",),
+    "apk": ("apk",),
+    "flatpak": ("flatpak",),
+}
+
+# dep -> per-manager package/spec. `vista` holds a vista install spec
+# (None = not installable via vista, use native PM instead).
+SYSTEM_DEPS: Dict[str, Dict[str, Any]] = {
+    "java": {
+        "label": "Java 21 Runtime (required for Minecraft 1.20.5+)",
+        "vista": "adoptium@temurin21-binaries",
+        "dnf": "java-21-openjdk",
+        "apt": "openjdk-21-jre",
+        "pacman": "jre21-openjdk",
+        "zypper": "java-21-openjdk",
+        "apk": "openjdk21-jre",
+        "flatpak": None,
+    },
+    "tkinter": {
+        "label": "Tkinter (required for --gui)",
+        "vista": None,  # distro python binding; always via native PM
+        "dnf": "python3-tkinter",
+        "apt": "python3-tk",
+        "pacman": "tk",
+        "zypper": "python3-tk",
+        "apk": "py3-tkinter",
+        "flatpak": None,
+    },
+    "launcher": {
+        "label": "Minecraft launcher (official or PrismLauncher)",
+        "vista": "org.prismlauncher.PrismLauncher --default flathub",
+        "dnf": None,  # official launcher: download from minecraft.net
+        "apt": None,
+        "pacman": "prismlauncher",
+        "zypper": None,
+        "apk": None,
+        "flatpak": "org.prismlauncher.PrismLauncher",
+    },
+}
+
+def detect_package_managers() -> List[str]:
+    """Return installed system package managers, vista first."""
+    found = []
+    for pm in SYSTEM_PACKAGE_MANAGERS:
+        for binary in _PM_BINARIES[pm]:
+            if shutil.which(binary):
+                found.append(pm)
+                break
+    return found
+
+def check_java() -> Tuple[bool, str]:
+    """Check for a usable Java runtime (17+, ideally 21)."""
+    java = shutil.which("java")
+    if not java:
+        return False, "no `java` on PATH"
+    try:
+        out = subprocess.run([java, "-version"], capture_output=True, text=True, timeout=10)
+        text = (out.stderr or "") + (out.stdout or "")
+        m = re.search(r'version "(\d+)(?:\.(\d+))?', text)
+        if not m:
+            return True, f"found at {java} (version unparseable)"
+        major = int(m.group(1))
+        if major == 1 and m.group(2):
+            major = int(m.group(2))  # old-style "1.8.0" -> 8
+        detail = f"{text.strip().splitlines()[0] if text.strip() else java}"
+        if major >= 21:
+            return True, detail
+        if major >= 17:
+            return True, detail + " (works; 21 recommended for 1.20.5+)"
+        return False, detail + " (too old; need 17+, ideally 21)"
+    except Exception as e:
+        return False, f"found at {java} but `-version` failed: {e}"
+
+def check_tkinter() -> Tuple[bool, str]:
+    """Check whether this Python has tkinter (needed for --gui)."""
+    try:
+        out = subprocess.run(
+            [sys.executable, "-c", "import tkinter"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if out.returncode == 0:
+            return True, f"available ({sys.executable})"
+        err = (out.stderr or "").strip().splitlines()
+        return False, err[0] if err else "import tkinter failed"
+    except Exception as e:
+        return False, f"check failed: {e}"
+
+def check_launcher() -> Tuple[bool, str]:
+    """Check for an installed Minecraft launcher (official or Prism)."""
+    if shutil.which("prismlauncher"):
+        return True, "PrismLauncher on PATH"
+    if shutil.which("minecraft-launcher"):
+        return True, "official Minecraft Launcher on PATH"
+    if shutil.which("flatpak"):
+        try:
+            out = subprocess.run(
+                ["flatpak", "list", "--app", "--columns=application"],
+                capture_output=True, text=True, timeout=15,
+            )
+            apps = (out.stdout or "").split()
+            if "org.prismlauncher.PrismLauncher" in apps:
+                return True, "PrismLauncher (Flatpak)"
+            if "com.mojang.Minecraft" in apps:
+                return True, "official launcher (Flatpak)"
+        except Exception:
+            pass
+    return False, "no launcher found (official minecraft-launcher or PrismLauncher)"
+
+_DEP_CHECKERS = {
+    "java": check_java,
+    "tkinter": check_tkinter,
+    "launcher": check_launcher,
+}
+
+def check_system_deps() -> Dict[str, Dict[str, Any]]:
+    """Check all system deps. Returns {name: {installed, detail, label}}."""
+    result = {}
+    for name, spec in SYSTEM_DEPS.items():
+        try:
+            installed, detail = _DEP_CHECKERS[name]()
+        except Exception as e:
+            installed, detail = False, f"check failed: {e}"
+        result[name] = {"installed": installed, "detail": detail, "label": spec["label"]}
+    return result
+
+def _needs_root(pm: str) -> bool:
+    return pm in ("dnf", "apt", "pacman", "zypper", "apk")
+
+def build_dep_install_command(dep: str, pm: str, yes: bool = False) -> Optional[List[str]]:
+    """Build the install command for `dep` via `pm`. None if unsupported."""
+    spec = SYSTEM_DEPS.get(dep)
+    if not spec:
+        raise ModpackerError(f"Unknown dependency: {dep}. Known: {sorted(SYSTEM_DEPS)}")
+    if pm == "vista":
+        vista_spec = spec.get("vista")
+        if not vista_spec:
+            return None
+        cmd = ["vista", "install"] + vista_spec.split()
+        if yes:
+            cmd.append("-y")
+        return cmd
+    pkg = spec.get(pm)
+    if not pkg:
+        return None
+    # Native managers need root; prepend sudo when available and not root.
+    prefix: List[str] = []
+    try:
+        is_root = (os.geteuid() == 0)
+    except AttributeError:
+        is_root = False  # Windows: no sudo concept here
+    if _needs_root(pm) and not is_root and shutil.which("sudo"):
+        prefix = ["sudo"]
+    if pm == "dnf":
+        binary = "dnf" if shutil.which("dnf") else "dnf5"
+        return prefix + [binary, "install", "-y", pkg]
+    if pm == "apt":
+        return prefix + ["apt-get", "install", "-y", pkg]
+    if pm == "pacman":
+        return prefix + ["pacman", "-S", "--noconfirm", "--needed", pkg]
+    if pm == "zypper":
+        return prefix + ["zypper", "install", "-y", pkg]
+    if pm == "apk":
+        return prefix + ["apk", "add", pkg]
+    if pm == "flatpak":
+        return ["flatpak", "install", "-y", "flathub", pkg]
+    raise ModpackerError(f"Unsupported package manager: {pm}")
+
+def resolve_pm(pm: str) -> str:
+    """Resolve `auto` to the best available manager (vista preferred)."""
+    available = detect_package_managers()
+    if pm != "auto":
+        if pm not in available:
+            raise ModpackerError(
+                f"Package manager '{pm}' not found on PATH. Available: {available or 'none'}"
+            )
+        return pm
+    for preferred in ("vista", "dnf", "apt", "pacman", "zypper", "apk"):
+        if preferred in available:
+            return preferred
+    if "flatpak" in available:
+        return "flatpak"
+    raise ModpackerError("No supported package manager found (vista, dnf, apt, pacman, zypper, apk, flatpak)")
+
+def install_system_deps(pm: str = "auto", only: Optional[List[str]] = None,
+                        dry_run: bool = False, yes: bool = False) -> int:
+    """Install missing system deps via `pm`. Returns number installed (dry-run counts planned)."""
+    manager = resolve_pm(pm)
+    wanted = list(only) if only else list(SYSTEM_DEPS)
+    unknown = [d for d in wanted if d not in SYSTEM_DEPS]
+    if unknown:
+        raise ModpackerError(f"Unknown dependencies: {unknown}. Known: {sorted(SYSTEM_DEPS)}")
+    status = check_system_deps()
+    installed = 0
+    for dep in wanted:
+        if status[dep]["installed"]:
+            print(f"  ✓ {dep}: already installed ({status[dep]['detail']})")
+            continue
+        cmd = build_dep_install_command(dep, manager, yes=yes)
+        if cmd is None:
+            print(f"  ✗ {dep}: '{manager}' cannot provide this ({status[dep]['detail']}). "
+                  f"Install manually: {SYSTEM_DEPS[dep]['label']}")
+            continue
+        print(f"  → {dep}: {' '.join(cmd)}")
+        if dry_run:
+            installed += 1
+            continue
+        try:
+            subprocess.run(cmd, check=True)
+            installed += 1
+            print(f"  ✓ {dep}: installed")
+        except subprocess.CalledProcessError as e:
+            print(f"  ✗ {dep}: command failed (exit {e.returncode}). Re-run with --verbose or install manually.")
+        except FileNotFoundError:
+            print(f"  ✗ {dep}: `{cmd[0]}` not found despite detection. Re-run --check-deps.")
+    return installed
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Launcher Integration (launcher_profiles.json)
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -1691,6 +1927,9 @@ def build_cli_parser() -> argparse.ArgumentParser:
           %(prog)s --gui
           %(prog)s https://modrinth.com/modpack/foo --list-versions
           %(prog)s https://modrinth.com/modpack/foo --version-id abc123
+          %(prog)s --check-deps
+          %(prog)s --install-deps --pm vista --dry-run
+          %(prog)s --install-deps --pm vista --yes
 
         Minecraft directory auto-detection:
           Windows: %%APPDATA%%/.minecraft
@@ -1715,6 +1954,12 @@ def build_cli_parser() -> argparse.ArgumentParser:
     p.add_argument("--gui", action="store_true", help="Launch graphical UI")
     p.add_argument("--verbose", action="store_true", help="Verbose logging")
     p.add_argument("--version", action="store_true", help="Show version and exit")
+    p.add_argument("--check-deps", action="store_true", help="Check system dependencies (Java, Tkinter, launcher) and exit")
+    p.add_argument("--install-deps", action="store_true", help="Install missing system dependencies and exit (or continue to modpack install if a URL is also given)")
+    p.add_argument("--pm", default="auto", choices=["auto", "vista", "dnf", "apt", "pacman", "zypper", "apk", "flatpak"],
+                   help="Package manager for --install-deps (default auto; vista preferred when available)")
+    p.add_argument("--deps", default=None, help="Comma-separated subset of deps for --install-deps (choices: java,tkinter,launcher)")
+    p.add_argument("--yes", action="store_true", help="Assume yes for package-manager prompts during --install-deps")
     return p
 
 def cli_main(argv=None):
@@ -1725,6 +1970,33 @@ def cli_main(argv=None):
         return 0
     if args.verbose:
         log.setLevel(logging.DEBUG)
+    # System dependency checks / installation (standalone; may precede a modpack install)
+    if args.check_deps:
+        print(f"=== {APP_NAME} v{APP_VERSION} — system dependencies ===")
+        print(f"Package managers: {detect_package_managers() or 'none found'}")
+        status = check_system_deps()
+        missing = 0
+        for name, info in status.items():
+            mark = "✓" if info["installed"] else "✗"
+            print(f"  {mark} {name}: {info['detail']}")
+            if not info["installed"]:
+                missing += 1
+        if missing and not args.url and not args.install_deps:
+            return 1
+        if not args.url and not args.install_deps:
+            return 0
+    if args.install_deps:
+        only = [d.strip().lower() for d in args.deps.split(",") if d.strip()] if args.deps else None
+        print(f"=== {APP_NAME} v{APP_VERSION} — installing system dependencies ===")
+        try:
+            n = install_system_deps(pm=args.pm, only=only, dry_run=args.dry_run, yes=args.yes)
+            print(f"  Done: {n} package(s) {'would be ' if args.dry_run else ''}installed")
+        except ModpackerError as e:
+            log.error(f"Dependency installation failed: {e}")
+            return 1
+        if not args.url:
+            return 0
+        print()
     # GUI mode if requested or no URL and display available
     if args.gui or (not args.url and not args.list_versions):
         # Check if tkinter available and display
