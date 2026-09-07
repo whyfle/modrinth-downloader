@@ -131,7 +131,7 @@ Via Vista this runs `vista install adoptium@temurin21-binaries` for Java and
 `vista install org.prismlauncher.PrismLauncher --default flathub` for the launcher
 (PrismLauncher from Flathub; Tkinter always uses the native manager:
 `python3-tkinter` / `python3-tk` / `tk`). Vista itself:
-`sudo dnf copr enable whyfle/vista && sudo dnf install vista`
+`curl -fsSL https://raw.githubusercontent.com/whyfle/vista/main/install.sh | sudo bash`
 — see https://github.com/whyfle/vista.
 
 ---
